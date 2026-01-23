@@ -38,9 +38,9 @@ export default defineConfig(({ mode }) => {
       // 反向代理
       proxy: {
         "/api": {
-          target: "http://4.233.147.12:8080",
+          target: "http://localhost:8080",
           // 是否为 WebSocket
-          ws: false,
+          ws: true,
           // 是否允许跨域
           changeOrigin: true
         }

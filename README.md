@@ -153,10 +153,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 启动服务
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-后端服务启动后，访问 http://localhost:8000/docs 查看API文档。
+后端服务启动后，访问 http://localhost:8080/docs 查看API文档。
 
 #### 3. 启动前端服务
 
@@ -375,10 +375,10 @@ docker-compose down
 
 ```bash
 # API地址
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8080
 
 # WebSocket地址
-VITE_WS_BASE_URL=ws://localhost:8000
+VITE_WS_BASE_URL=ws://localhost:8080
 
 # 标题
 VITE_APP_TITLE=基于人脸检测的人数统计系统
@@ -391,7 +391,7 @@ VITE_APP_TITLE=基于人脸检测的人数统计系统
 ```python
 # 服务器配置
 HOST = "0.0.0.0"
-PORT = 8000
+PORT = 8080
 
 # 数据库配置
 DATABASE_URL = "sqlite:///./face_count.db"

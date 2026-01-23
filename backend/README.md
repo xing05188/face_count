@@ -118,7 +118,7 @@ pip install -r requirements.txt
 ```python
 # 服务器配置
 HOST = "0.0.0.0"
-PORT = 8000
+PORT = 8080
 
 # 数据库配置
 DATABASE_URL = "sqlite:///./face_count.db"
@@ -143,9 +143,9 @@ ENABLE_STRANGER_ALARM = True
 
 ```bash
 # 使用uvicorn启动
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8080
 
 # 或使用启动脚本（Windows）
 start.bat
@@ -153,8 +153,8 @@ start.bat
 
 服务启动后，访问以下地址：
 
-- API文档: http://localhost:8000/docs
-- ReDoc文档: http://localhost:8000/redoc
+- API文档: http://localhost:8080/docs
+- ReDoc文档: http://localhost:8080/redoc
 
 ## API接口文档
 
@@ -645,7 +645,7 @@ class AlarmRecord(BaseModel):
 docker build -t face_count_backend .
 
 # 运行容器
-docker run -d -p 8000:8000 --gpus all face_count_backend
+docker run -d -p 8080:8080 --gpus all face_count_backend
 ```
 
 ### 生产环境部署
@@ -654,7 +654,7 @@ docker run -d -p 8000:8000 --gpus all face_count_backend
 
 ```bash
 # 使用Gunicorn + Uvicorn workers
-gunicorn main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+gunicorn main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8080
 ```
 
 ## 开发指南
