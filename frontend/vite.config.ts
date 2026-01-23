@@ -30,7 +30,7 @@ export default defineConfig(({ mode }) => {
       // 是否监听所有地址
       host: true,
       // 端口号
-      port: 3333,
+      port: 80,
       // 端口被占用时，是否直接退出
       strictPort: false,
       // 是否自动打开浏览器
@@ -38,9 +38,9 @@ export default defineConfig(({ mode }) => {
       // 反向代理
       proxy: {
         "/api": {
-          target: "http://4.233.147.12:8080",
+          target: "http://localhost:8080",
           // 是否为 WebSocket
-          ws: false,
+          ws: true,
           // 是否允许跨域
           changeOrigin: true
         }

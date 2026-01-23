@@ -2,6 +2,8 @@
 import axios from "axios"
 import { onMounted, ref } from "vue"
 
+const API_BASE_URL = import.meta.env.VITE_BASE_URL || "/api"
+
 const message = ref<string>("")
 const loading = ref<boolean>(false)
 const error = ref<string>("")
@@ -10,7 +12,7 @@ async function testApi() {
   loading.value = true
   error.value = ""
   try {
-    const response = await axios.get("http://localhost:8000/hello")
+    const response = await axios.get(`${API_BASE_URL}/hello`)
     message.value = response.data.message
   } catch (err: any) {
     error.value = err.message || "请求失败"

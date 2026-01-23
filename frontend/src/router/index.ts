@@ -77,6 +77,51 @@ export const constantRoutes: RouteRecordRaw[] = [
         }
       }
     ]
+  },
+  {
+    path: "/image-detect",
+    component: Layouts,
+    children: [
+      {
+        path: "",
+        component: () => import("@/pages/image-detect/index.vue"),
+        name: "ImageDetect",
+        meta: {
+          title: "图片检测",
+          elIcon: "Picture"
+        }
+      }
+    ]
+  },
+  {
+    path: "/video-detect",
+    component: Layouts,
+    children: [
+      {
+        path: "",
+        component: () => import("@/pages/video-detect/index.vue"),
+        name: "VideoDetect",
+        meta: {
+          title: "视频检测",
+          elIcon: "VideoCamera"
+        }
+      }
+    ]
+  },
+  {
+    path: "/camera-detect",
+    component: Layouts,
+    children: [
+      {
+        path: "",
+        component: () => import("@/pages/camera-detect/index.vue"),
+        name: "CameraDetect",
+        meta: {
+          title: "摄像头检测",
+          elIcon: "Camera"
+        }
+      }
+    ]
   }
 ]
 
