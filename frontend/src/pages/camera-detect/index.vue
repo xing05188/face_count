@@ -6,8 +6,6 @@ const API_BASE_URL = import.meta.env.VITE_BASE_URL || "/api"
 interface StatsData {
   frame_index: number
   face_count: number
-  fps: number
-  total_faces: number
 }
 
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -25,8 +23,6 @@ const connected = ref(false)
 
 const stats = ref<StatsData | null>(null)
 const frameCount = ref(0)
-const totalFaces = ref(0)
-const fps = ref(0)
 
 const cameraReady = ref(false)
 const resultReady = ref(false)
@@ -147,11 +143,14 @@ function connectWebSocket() {
     // 二进制：后端返回 JPEG bytes
     if (event.data instanceof ArrayBuffer) {
       const blob = new Blob([event.data], { type: "image/jpeg" })
-      await nextTick()
-
-      cleanupResultUrl()
-      lastResultUrl = URL.createObjectURL(blob)
-      if (resultImageRef.value) resultImageRef.value.src = lastResultUrl
+      const newUrl = URL.createObjectURL(blob)
+      if (lastResultUrl) {
+        URL.revokeObjectURL(lastResultUrl)
+      }
+      lastResultUrl = newUrl
+      if (resultImageRef.value) {
+        resultImageRef.value.src = newUrl
+      }
       resultReady.value = true
       return
     }
@@ -161,13 +160,9 @@ function connectWebSocket() {
       const data = JSON.parse(event.data as string)
       if (data.type === "stats") {
         frameCount.value = data.frame_index
-        totalFaces.value = data.total_faces
-        fps.value = data.fps
         stats.value = {
           frame_index: data.frame_index,
-          face_count: data.face_count,
-          fps: data.fps,
-          total_faces: data.total_faces
+          face_count: data.face_count
         }
       } else if (data.type === "error") {
         error.value = data.message || "服务端错误"
@@ -227,8 +222,6 @@ async function startDetection() {
   cleanupResultUrl()
   stats.value = null
   frameCount.value = 0
-  totalFaces.value = 0
-  fps.value = 0
 
   try {
     await startCamera()
@@ -263,8 +256,6 @@ function reset() {
   error.value = ""
   stats.value = null
   frameCount.value = 0
-  totalFaces.value = 0
-  fps.value = 0
   cleanupResultUrl()
 }
 
@@ -321,14 +312,6 @@ onUnmounted(() => {
                 <span class="stat-label">当前人脸数</span>
                 <span class="stat-value">{{ stats?.face_count || 0 }}</span>
               </div>
-              <div class="stat-item">
-                <span class="stat-label">总检测数</span>
-                <span class="stat-value">{{ totalFaces }}</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">FPS</span>
-                <span class="stat-value">{{ fps }}</span>
-              </div>
             </div>
             <div class="result-image">
               <h3>检测结果</h3>
@@ -339,13 +322,13 @@ onUnmounted(() => {
                   alt="检测结果"
                 >
                 <div v-if="!resultReady" class="placeholder overlay">
-                  <p>{{ isDetecting ? "等待检测结果..." : "检测结果将在这里显示" }}</p>
+                  <p>{{ isDetecting ? "等待检测结果..." : "检测结果" }}</p>
                 </div>
               </div>
             </div>
           </div>
           <div v-else class="placeholder">
-            <p>检测结果将在这里显示</p>
+            <p>检测结果</p>
           </div>
         </div>
       </div>

@@ -105,11 +105,11 @@ function reset() {
             <p>检测中，请稍候...</p>
           </div>
           <div v-else-if="resultUrl" class="result-content">
-            <img :src="resultUrl" class="result-image">
             <div class="face-count">
               <span class="count-number">{{ faceCount }}</span>
               <span class="count-label">个人脸</span>
             </div>
+            <img :src="resultUrl" class="result-image">
           </div>
           <div v-else class="placeholder">
             <p>检测结果</p>
@@ -302,7 +302,7 @@ h2 {
   flex-direction: row;
   align-items: center;
   gap: 10px;
-  padding: 30px 50px;
+  padding: 15px 30px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-radius: 12px;
   color: white;

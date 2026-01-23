@@ -134,8 +134,6 @@ async def detect_camera_stream(websocket: WebSocket):
     logger.info("摄像头检测WebSocket连接已建立")
     
     frame_count = 0
-    total_faces = 0
-    start_time = asyncio.get_running_loop().time()
     # 可按需调整：后端最大处理宽度、JPEG质量
     max_width = 640
     jpeg_quality = 75
@@ -163,20 +161,15 @@ async def detect_camera_stream(websocket: WebSocket):
                 )
 
                 frame_count += 1
-                total_faces += face_count
                 
-                # 计算FPS
-                elapsed = asyncio.get_running_loop().time() - start_time
-                fps = round(frame_count / elapsed, 2) if elapsed > 0 else 0
+                logger.info(f"当前第 {frame_count} 帧，检测到 {face_count} 个人脸")
                 
                 # 先发送统计信息（JSON），再发送图像（二进制）
                 # 这样可以确保前端能正确配对消息
                 stats_message = {
                     "type": "stats",
                     "frame_index": frame_count,
-                    "face_count": face_count,
-                    "fps": fps,
-                    "total_faces": total_faces
+                    "face_count": face_count
                 }
                 try:
                     await websocket.send_json(stats_message)
@@ -207,4 +200,4 @@ async def detect_camera_stream(websocket: WebSocket):
         except:
             pass
     finally:
-        logger.info(f"摄像头检测会话结束，共处理 {frame_count} 帧，检测到 {total_faces} 个人脸")
+        logger.info(f"摄像头检测会话结束，共处理 {frame_count} 帧")

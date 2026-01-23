@@ -205,9 +205,6 @@ function reset() {
               >
                 您的浏览器不支持视频播放
               </video>
-              <div v-if="processedVideoUrl" class="debug-info">
-                <p>视频URL: {{ processedVideoUrl.substring(0, 50) }}...</p>
-              </div>
             </div>
           </div>
           <div v-else class="placeholder">

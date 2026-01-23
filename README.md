@@ -175,7 +175,20 @@ pnpm dev
 
 ### Docker部署
 
-#### 使用Docker Compose一键部署
+#### 方式一：使用 PowerShell 脚本（推荐）
+
+```powershell
+# 启动服务
+.\start.ps1
+
+# 停止服务
+.\stop.ps1
+
+# 重启服务
+.\restart.ps1
+```
+
+#### 方式二：使用 Docker Compose 命令
 
 ```bash
 # 构建并启动所有服务
@@ -190,6 +203,11 @@ docker-compose logs -f
 # 停止服务
 docker-compose down
 ```
+
+#### 访问地址
+
+- 前端：http://localhost
+- 后端 API 文档：http://localhost:8080/docs
 
 ## 功能模块
 
