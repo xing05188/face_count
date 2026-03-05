@@ -1,133 +1,342 @@
 <script lang="ts" setup>
-import { ref } from "vue"
+import { computed, nextTick, onUnmounted, ref } from "vue"
 
 const API_BASE_URL = import.meta.env.VITE_BASE_URL || "/api"
 
 interface StatsData {
-  total_frames: number
-  processing_time_seconds: number
-  frame_counts: number[]
+  analyzed_frames: number
+  current_face_count: number
+}
+
+interface DetectionBox {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+interface DetectionItem {
+  name: string
+  class: number
+  confidence: number
+  box: DetectionBox
+}
+
+interface DetectionImageResult {
+  shape: [number, number]
+  face_count: number
+  results: DetectionItem[]
+}
+
+interface DetectionResponse {
+  mode: "compact" | "full"
+  images: DetectionImageResult[]
 }
 
 const file = ref<File | null>(null)
 const originalVideoUrl = ref<string>("")
-const processedVideoUrl = ref<string>("")
 const stats = ref<StatsData | null>(null)
 const loading = ref<boolean>(false)
 const error = ref<string>("")
 const fileInput = ref<HTMLInputElement | null>(null)
 const videoRef = ref<HTMLVideoElement | null>(null)
+const overlayCanvasRef = ref<HTMLCanvasElement | null>(null)
+const captureCanvasRef = ref<HTMLCanvasElement | null>(null)
 const currentFrameIndex = ref<number>(0)
 const currentFaceCount = ref<number>(0)
+const isDetecting = ref<boolean>(false)
+const connected = ref<boolean>(false)
+const selectedFps = ref<number>(12)
+const fpsOptions = [8, 10, 12, 15]
+
+let detectTimer: number | null = null
+let sending = false
+let awaitingResult = false
+let ws: WebSocket | null = null
+let analyzedFrames = 0
+let lastCapturedVideoTime = 0
+const VIDEO_SEND_MAX_WIDTH = 640
+const VIDEO_SEND_JPEG_QUALITY = 0.65
+const MAX_RESULT_LAG_SEC = 0.6
+
+const canStart = computed(() => !loading.value && !!file.value && !isDetecting.value)
+const canStop = computed(() => isDetecting.value)
 
 function handleFileChange(event: Event) {
   const target = event.target as HTMLInputElement
   if (target.files && target.files[0]) {
+    if (originalVideoUrl.value) {
+      URL.revokeObjectURL(originalVideoUrl.value)
+    }
     file.value = target.files[0]
     originalVideoUrl.value = URL.createObjectURL(file.value)
     reset()
   }
 }
 
-function onTimeUpdate() {
-  if (!videoRef.value || !stats.value) return
-
-  const video = videoRef.value
-  const currentTime = video.currentTime
-  const duration = video.duration
-
-  if (duration > 0) {
-    const frameIndex = Math.floor((currentTime / duration) * stats.value.total_frames)
-    currentFrameIndex.value = Math.min(frameIndex, stats.value.total_frames - 1)
-    currentFaceCount.value = stats.value.frame_counts[currentFrameIndex.value] || 0
+function clearOverlay() {
+  const canvas = overlayCanvasRef.value
+  const ctx = canvas?.getContext("2d")
+  if (canvas && ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
   }
 }
 
-function onVideoLoaded() {
-  console.log("Video loaded successfully")
-  console.log("Video duration:", videoRef.value?.duration)
-  console.log("Video readyState:", videoRef.value?.readyState)
+function stopLoop() {
+  if (detectTimer !== null) {
+    window.clearInterval(detectTimer)
+    detectTimer = null
+  }
+  sending = false
+  awaitingResult = false
+}
+
+function stopWebSocket() {
+  try {
+    ws?.close()
+  } finally {
+    ws = null
+    connected.value = false
+  }
+}
+
+function stopDetection() {
+  isDetecting.value = false
+  stopLoop()
+  stopWebSocket()
+}
+
+function updateFps(nextFps: number) {
+  selectedFps.value = nextFps
+  if (isDetecting.value) {
+    startLoop()
+  }
+}
+
+async function onVideoLoaded() {
+  const video = videoRef.value
+  if (!video) return
+  const overlay = overlayCanvasRef.value
+  if (!overlay) return
+
+  overlay.width = video.videoWidth || 0
+  overlay.height = video.videoHeight || 0
+  await nextTick()
 }
 
 function onVideoError(event: Event) {
-  console.error("Video error:", event)
   const video = event.target as HTMLVideoElement
-  console.error("Video error code:", video.error?.code)
-  console.error("Video error message:", video.error?.message)
   error.value = `视频加载失败: ${video.error?.message || "未知错误"}`
+  stopDetection()
+}
+
+function drawDetections(results: DetectionItem[], shape: [number, number]) {
+  const canvas = overlayCanvasRef.value
+  const video = videoRef.value
+  if (!canvas || !video) return
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return
+
+  const srcH = shape?.[0] || video.videoHeight || canvas.height
+  const srcW = shape?.[1] || video.videoWidth || canvas.width
+  const scaleX = srcW > 0 ? canvas.width / srcW : 1
+  const scaleY = srcH > 0 ? canvas.height / srcH : 1
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.lineWidth = 2
+  ctx.font = "16px sans-serif"
+
+  results.forEach((item) => {
+    const x1 = item.box.x1 * scaleX
+    const y1 = item.box.y1 * scaleY
+    const x2 = item.box.x2 * scaleX
+    const y2 = item.box.y2 * scaleY
+    const w = Math.max(0, x2 - x1)
+    const h = Math.max(0, y2 - y1)
+    const label = `${item.name} ${(item.confidence * 100).toFixed(1)}%`
+
+    ctx.strokeStyle = "#ff1744"
+    ctx.fillStyle = "rgba(255, 23, 68, 0.18)"
+    ctx.strokeRect(x1, y1, w, h)
+    ctx.fillRect(x1, y1, w, h)
+
+    const textWidth = ctx.measureText(label).width
+    const textY = Math.max(0, y1 - 24)
+    ctx.fillStyle = "#ff1744"
+    ctx.fillRect(x1, textY, textWidth + 12, 24)
+    ctx.fillStyle = "#ffffff"
+    ctx.fillText(label, x1 + 6, textY + 17)
+  })
+}
+
+async function detectCurrentFrame() {
+  if (sending || awaitingResult) return
+  const video = videoRef.value
+  const captureCanvas = captureCanvasRef.value
+  if (!video || !captureCanvas || video.readyState < 2 || video.paused || video.ended) return
+  if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+  sending = true
+  try {
+    // 控制上传分辨率，减少带宽与推理时延
+    const srcW = video.videoWidth
+    const srcH = video.videoHeight
+    if (!srcW || !srcH) return
+
+    const maxW = VIDEO_SEND_MAX_WIDTH
+    const scale = srcW > maxW ? maxW / srcW : 1
+    const sendW = Math.max(1, Math.round(srcW * scale))
+    const sendH = Math.max(1, Math.round(srcH * scale))
+
+    captureCanvas.width = sendW
+    captureCanvas.height = sendH
+    const ctx = captureCanvas.getContext("2d")
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0, sendW, sendH)
+
+    const capturedVideoTime = video.currentTime
+    const frameBlob = await new Promise<Blob | null>((resolve) => {
+      captureCanvas.toBlob((blob) => resolve(blob), "image/jpeg", VIDEO_SEND_JPEG_QUALITY)
+    })
+    if (!frameBlob) return
+
+    lastCapturedVideoTime = capturedVideoTime
+    awaitingResult = true
+    ws.send(await frameBlob.arrayBuffer())
+  } catch (err: any) {
+    error.value = err?.message || "检测失败"
+  } finally {
+    sending = false
+  }
+}
+
+function connectWebSocket() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+  const host = window.location.host
+  const wsUrl = `${protocol}//${host}${API_BASE_URL}/detect/camera?mode=compact`
+
+  const socket = new WebSocket(wsUrl)
+  socket.binaryType = "arraybuffer"
+  ws = socket
+
+  socket.onopen = () => {
+    connected.value = true
+  }
+
+  socket.onerror = () => {
+    error.value = "WebSocket 连接错误"
+  }
+
+  socket.onclose = () => {
+    connected.value = false
+  }
+
+  socket.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      // 兼容旧消息，当前后端仅返回 JSON
+      return
+    }
+    try {
+      const data = JSON.parse(event.data as string)
+      if (data.type === "error") {
+        awaitingResult = false
+        error.value = data.message || "服务端错误"
+        return
+      }
+      if (data.type !== "result") return
+
+      const video = videoRef.value
+      if (!video) return
+
+      if (Math.abs(video.currentTime - lastCapturedVideoTime) > MAX_RESULT_LAG_SEC) {
+        awaitingResult = false
+        return
+      }
+
+      const imageResult = {
+        shape: data.shape as [number, number],
+        face_count: Number(data.face_count || 0),
+        results: Array.isArray(data.results) ? data.results : [],
+      }
+
+      analyzedFrames += 1
+      currentFrameIndex.value = analyzedFrames
+      currentFaceCount.value = imageResult.face_count || 0
+      stats.value = {
+        analyzed_frames: analyzedFrames,
+        current_face_count: currentFaceCount.value,
+      }
+
+      drawDetections(imageResult.results || [], imageResult.shape || [0, 0])
+      awaitingResult = false
+    } catch {
+      awaitingResult = false
+    }
+  }
+}
+
+function startLoop() {
+  stopLoop()
+  const interval = Math.max(66, Math.round(1000 / selectedFps.value))
+  detectTimer = window.setInterval(() => {
+    void detectCurrentFrame()
+  }, interval)
 }
 
 async function detectVideo() {
-  if (!file.value) {
+  if (!file.value || !videoRef.value) {
     error.value = "请先选择视频"
     return
   }
 
   loading.value = true
   error.value = ""
-  stats.value = null
-  processedVideoUrl.value = ""
+  clearOverlay()
   currentFrameIndex.value = 0
   currentFaceCount.value = 0
+  analyzedFrames = 0
+  stats.value = {
+    analyzed_frames: 0,
+    current_face_count: 0,
+  }
 
   try {
-    const formData = new FormData()
-    formData.append("file", file.value)
-
-    const response = await fetch(`${API_BASE_URL}/detect/video?output_format=mp4`, {
-      method: "POST",
-      body: formData
-    })
-
-    if (!response.ok) {
-      const errorData = await response.json()
-      throw new Error(errorData.detail || "检测失败")
+    const video = videoRef.value
+    connectWebSocket()
+    const start = Date.now()
+    while (!connected.value && Date.now() - start < 3000) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
     }
-    const faceCountsHeader = response.headers.get("X-Frame-Counts")
-    const totalFramesHeader = response.headers.get("X-Total-Frames")
-    const processingTimeHeader = response.headers.get("X-Processing-Time")
-
-    console.log("Face counts header:", faceCountsHeader)
-    console.log("Total frames header:", totalFramesHeader)
-    console.log("Processing time header:", processingTimeHeader)
-
-    const faceCounts = faceCountsHeader ? JSON.parse(faceCountsHeader) : []
-    const totalFrames = Number.parseInt(totalFramesHeader || "0")
-    const processingTime = Number.parseFloat(processingTimeHeader || "0")
-
-    stats.value = {
-      total_frames: totalFrames,
-      processing_time_seconds: processingTime,
-      frame_counts: faceCounts
+    if (!connected.value) {
+      throw new Error("WebSocket 连接失败")
     }
-
-    console.log("Stats:", stats.value)
-
-    const videoBlob = await response.blob()
-    console.log("Video blob size:", videoBlob.size)
-    console.log("Video blob type:", videoBlob.type)
-
-    if (videoBlob.size === 0) {
-      throw new Error("返回的视频文件为空")
-    }
-
-    processedVideoUrl.value = URL.createObjectURL(videoBlob)
-    console.log("Processed video URL:", processedVideoUrl.value)
+    await video.play()
+    isDetecting.value = true
+    startLoop()
   } catch (err: any) {
-    console.error("Detection error:", err)
     error.value = err.message || "检测失败"
+    stopDetection()
   } finally {
     loading.value = false
   }
 }
 
 function reset() {
+  stopDetection()
   stats.value = null
   error.value = ""
-  processedVideoUrl.value = ""
   currentFrameIndex.value = 0
   currentFaceCount.value = 0
+  analyzedFrames = 0
+  clearOverlay()
 }
+
+onUnmounted(() => {
+  stopDetection()
+  if (originalVideoUrl.value) {
+    URL.revokeObjectURL(originalVideoUrl.value)
+  }
+})
 </script>
 
 <template>
@@ -154,12 +363,29 @@ function reset() {
             <video v-else :src="originalVideoUrl" class="preview-video" controls />
           </div>
           <div class="button-group">
-            <button @click="detectVideo" :disabled="loading || !file" class="detect-button">
-              {{ loading ? "检测中..." : "开始检测" }}
+            <button @click="detectVideo" :disabled="!canStart" class="detect-button">
+              {{ loading ? "启动中..." : isDetecting ? "检测中" : "开始检测" }}
+            </button>
+            <button @click="stopDetection" :disabled="!canStop" class="stop-button">
+              停止检测
             </button>
             <button @click="reset" :disabled="loading" class="reset-button">
               重置
             </button>
+          </div>
+          <div class="fps-row">
+            <label class="fps-label" for="video-fps-select">检测帧率</label>
+            <select
+              id="video-fps-select"
+              class="fps-select"
+              :disabled="loading"
+              :value="selectedFps"
+              @change="updateFps(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option v-for="fps in fpsOptions" :key="fps" :value="fps">
+                {{ fps }} FPS
+              </option>
+            </select>
           </div>
         </div>
         <div v-if="error" class="error-message">
@@ -173,38 +399,33 @@ function reset() {
             <div class="spinner" />
             <p>检测中，请稍候...</p>
           </div>
-          <div v-else-if="stats" class="result-content">
+          <div v-else-if="originalVideoUrl" class="result-content">
             <div class="stats-info">
               <div class="stat-item">
-                <span class="stat-label">当前帧</span>
-                <span class="stat-value">{{ currentFrameIndex + 1 }} / {{ stats.total_frames }}</span>
+                <span class="stat-label">已分析帧数</span>
+                <span class="stat-value">{{ stats?.analyzed_frames || 0 }}</span>
               </div>
               <div class="stat-item">
                 <span class="stat-label">当前帧人脸数</span>
                 <span class="stat-value">{{ currentFaceCount }}</span>
               </div>
-              <div class="stat-item">
-                <span class="stat-label">处理耗时</span>
-                <span class="stat-value">{{ stats.processing_time_seconds }}s</span>
-              </div>
             </div>
             <div class="video-player">
-              <h3>处理后的视频</h3>
-              <div v-if="!processedVideoUrl" class="no-video">
-                <p>等待视频处理...</p>
+              <h3>抽帧检测结果（前端绘制）</h3>
+              <div class="video-stage">
+                <video
+                  ref="videoRef"
+                  :src="originalVideoUrl"
+                  class="result-video"
+                  controls
+                  @loadedmetadata="onVideoLoaded"
+                  @error="onVideoError"
+                >
+                  您的浏览器不支持视频播放
+                </video>
+                <canvas ref="overlayCanvasRef" class="overlay-canvas" />
               </div>
-              <video
-                v-else
-                ref="videoRef"
-                :src="processedVideoUrl"
-                class="result-video"
-                controls
-                @timeupdate="onTimeUpdate"
-                @loadedmetadata="onVideoLoaded"
-                @error="onVideoError"
-              >
-                您的浏览器不支持视频播放
-              </video>
+              <canvas ref="captureCanvasRef" style="display: none" />
             </div>
           </div>
           <div v-else class="placeholder">
@@ -331,7 +552,36 @@ h3 {
   flex-shrink: 0;
 }
 
+.fps-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fps-label {
+  font-size: 14px;
+  color: #606266;
+  white-space: nowrap;
+}
+
+.fps-select {
+  flex: 1;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #fff;
+  color: #303133;
+}
+
+.fps-select:focus {
+  outline: none;
+  border-color: #409eff;
+}
+
 .detect-button,
+.stop-button,
 .reset-button {
   flex: 1;
   padding: 16px;
@@ -356,6 +606,23 @@ h3 {
 
 .detect-button:disabled {
   background: #a0cfff;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.stop-button {
+  background: linear-gradient(135deg, #e6a23c 0%, #f0c78a 100%);
+  color: white;
+}
+
+.stop-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #f0c78a 0%, #e6a23c 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(230, 162, 60, 0.4);
+}
+
+.stop-button:disabled {
+  background: #f5dab1;
   cursor: not-allowed;
   transform: none;
 }
@@ -407,14 +674,30 @@ h3 {
   flex-shrink: 0;
 }
 
-.no-video {
+.video-stage {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 300px;
+  min-height: 300px;
   background: #e4e7ed;
   border-radius: 8px;
-  color: #909399;
+  overflow: hidden;
+}
+
+.result-video {
+  display: block;
+  width: 100%;
+  max-height: 480px;
+  background: #111;
+}
+
+.overlay-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .debug-info {
@@ -432,7 +715,7 @@ h3 {
 
 .stats-info {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 15px;
   padding: 24px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -459,7 +742,7 @@ h3 {
 }
 
 .stat-value {
-  font-size: 32px;
+  font-size: 26px;
   font-weight: bold;
   text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
 }

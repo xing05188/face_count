@@ -6,15 +6,15 @@
 
 - 健康检查：`GET /`（返回欢迎信息）
 - 简单测试：`GET /api/hello`（返回 `{"message": "helloworld"}`）
-- 图片人脸检测：`POST /api/detect`，上传图片，返回带检测框的图片；响应头 `X-Face-Count` 为检测到的人脸数
-- 视频人脸检测：`POST /api/detect/video`，上传视频文件，返回处理后的视频（AVI/MP4）；响应头返回帧级人数统计与处理耗时
-- 摄像头实时检测（WebSocket）：`ws(s)://<host>/api/detect/camera`，客户端发送 JPEG 帧，服务端返回处理后的 JPEG 帧和 JSON 统计消息
+- 图片人脸检测：`POST /api/detect`，上传图片，返回检测 JSON；响应头 `X-Face-Count` 为检测到的人脸数
+- 视频抽帧检测：`POST /api/detect/frame`，上传单帧图片二进制（`image/jpeg`），返回检测 JSON
+- 摄像头实时检测（WebSocket）：`ws(s)://<host>/api/detect/camera`，客户端发送 JPEG 帧，服务端返回 JSON 检测结果
 
 （以上接口由 `app.services.detection_service.FaceDetectionService` 使用 YOLO 实现）
 
 ## 如何运行（最简步骤）
 
-要求：Python 3.10+。请确认 `backend/app/models/yolo/yolov8n-face.pt` 或等效模型文件存在。
+要求：Python 3.10+。请确认 `backend/app/models/yolo/yolov6m-face.pt` 或等效模型文件存在。
 
 在 `backend` 目录下：
 

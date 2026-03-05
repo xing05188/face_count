@@ -1,11 +1,9 @@
-from fastapi import APIRouter, File, UploadFile, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse, Response
+from fastapi import APIRouter, File, UploadFile, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import JSONResponse
 from app.services.detection_service import face_detection_service
-import io
 import cv2
 import numpy as np
 import logging
-import json
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -13,7 +11,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["检测"])
 
 def _resize_keep_aspect(img: np.ndarray, max_w: int) -> np.ndarray:
-    """将图像按比例缩小到 max_w（不放大），用于提升推理/编码速度。"""
+    """将图像按比例缩小到 max_w（不放大），用于提升推理速度。"""
     if max_w <= 0:
         return img
     h, w = img.shape[:2]
@@ -23,64 +21,37 @@ def _resize_keep_aspect(img: np.ndarray, max_w: int) -> np.ndarray:
     new_h = int(h * (new_w / w))
     return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-async def _detect_plot_encode(img: np.ndarray, jpeg_quality: int = 75, max_w: int = 640):
-    """
-    在线程池执行：缩放 -> 推理 -> 绘制 -> JPEG编码
-    返回: (jpeg_bytes, face_count)
-    """
-    def _work():
-        frame = _resize_keep_aspect(img, max_w=max_w)
-        results = face_detection_service.detect(frame)
-        face_count = len(results[0].boxes) if len(results) > 0 and len(results[0].boxes) > 0 else 0
-        annotated = results[0].plot() if face_count > 0 else frame
-        ok, img_encoded = cv2.imencode(".jpg", annotated, [
-            int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality),
-            int(cv2.IMWRITE_JPEG_OPTIMIZE), 1
-        ])
-        if not ok:
-            raise ValueError("图像编码失败")
-        return img_encoded.tobytes(), face_count
+def _decode_image_bytes(contents: bytes) -> np.ndarray:
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="图片为空")
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="无法解码图片，请检查图片格式")
+    return img
 
-    return await asyncio.to_thread(_work)
+
+def _detect_to_payload(img: np.ndarray, response_mode: str, max_width: int):
+    frame = _resize_keep_aspect(img, max_w=max_width) if max_width > 0 else img
+    results = face_detection_service.detect(frame)
+    payload = face_detection_service.serialize_results_payload(results, mode=response_mode)
+    face_count = payload["images"][0]["face_count"] if payload.get("images") else 0
+    return payload, face_count
 
 @router.post(
     "/detect",
-    description="上传图片，返回带检测框的图片和检测到的人脸个数。图片通过响应头 X-Face-Count 返回人脸个数。"
+    description="上传图片并返回检测 JSON（不返回标注图）。"
 )
-async def detect_faces(file: UploadFile = File(..., description="要检测的图片文件，支持 jpg、png 等格式")):
+async def detect_faces(
+    file: UploadFile = File(..., description="要检测的图片文件，支持 jpg、png 等格式"),
+    response_mode: str = Query("compact", regex="^(compact|full)$", description="响应模式：compact 或 full"),
+    max_width: int = Query(0, ge=0, le=1920, description="检测前最大宽度；0 表示不额外缩放")
+):
     try:
         contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if img is None:
-            raise HTTPException(status_code=400, detail="无法解码图片，请检查图片格式")
-        
-        results = face_detection_service.detect(img)
-        
-        if len(results) == 0 or len(results[0].boxes) == 0:
-            # 如果没有检测到人脸，直接返回原图，避免重新编码
-            return StreamingResponse(
-                    io.BytesIO(contents),
-                    media_type=file.content_type or "image/jpeg",
-                    headers={"X-Face-Count": "0"}
-                )
-        
-        annotated_frame = results[0].plot()
-        face_count = len(results[0].boxes)
-        
-        # 使用优化的JPEG编码参数
-        _, img_encoded = cv2.imencode('.jpg', annotated_frame, [
-            int(cv2.IMWRITE_JPEG_QUALITY), 85,
-            int(cv2.IMWRITE_JPEG_OPTIMIZE), 1  # 启用JPEG优化
-        ])
-        img_bytes = img_encoded.tobytes()
-        
-        return StreamingResponse(
-                io.BytesIO(img_bytes),
-                media_type="image/jpeg",
-                headers={"X-Face-Count": str(face_count)}
-            )
+        img = _decode_image_bytes(contents)
+        payload, face_count = await asyncio.to_thread(_detect_to_payload, img, response_mode, max_width)
+        return JSONResponse(content=payload, headers={"X-Face-Count": str(face_count)})
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -88,38 +59,24 @@ async def detect_faces(file: UploadFile = File(..., description="要检测的图
         raise HTTPException(status_code=500, detail=f"检测失败: {str(e)}")
 
 @router.post(
-    "/detect/video",
-    description="上传视频文件（MP4/AVI等），返回处理后的视频文件（AVI格式）和统计信息。使用model.predict直接处理，性能最优。"
+    "/detect/frame",
+    description="上传单帧图片二进制并返回检测 JSON（低开销，适合视频抽帧场景）。"
 )
-async def detect_video(
-    file: UploadFile = File(..., description="要检测的视频文件，支持 mp4、avi 等格式"),
-    output_format: str = Query("avi", description="输出视频格式：avi（默认）或 mp4")
+async def detect_frame(
+    request: Request,
+    response_mode: str = Query("compact", regex="^(compact|full)$", description="响应模式：compact 或 full"),
+    max_width: int = Query(640, ge=160, le=1920, description="检测前最大宽度，建议 480~960")
 ):
     try:
-        contents = await file.read()
-        
-        if len(contents) == 0:
-            raise HTTPException(status_code=400, detail="视频文件为空")
-        
-        # 使用model.predict直接处理视频文件
-        output_video_bytes, stats = face_detection_service.detect_video_file(contents, output_format)
-        
-        # 返回处理后的视频文件和统计信息
-        return Response(
-            content=output_video_bytes,
-            media_type="video/x-msvideo" if output_format.lower() == "avi" else "video/mp4",
-            headers={
-                "X-Frame-Counts": json.dumps(stats["frame_counts"], ensure_ascii=False),
-                "X-Total-Frames": str(stats["total_frames"]),
-                "X-Processing-Time": str(stats["processing_time_seconds"])
-            }
-        )
-            
+        contents = await request.body()
+        img = _decode_image_bytes(contents)
+        payload, face_count = await asyncio.to_thread(_detect_to_payload, img, response_mode, max_width)
+        return JSONResponse(content=payload, headers={"X-Face-Count": str(face_count)})
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"视频检测失败: {e}")
-        raise HTTPException(status_code=500, detail=f"视频检测失败: {str(e)}")
+        logger.error(f"帧检测失败: {e}")
+        raise HTTPException(status_code=500, detail=f"帧检测失败: {str(e)}")
 
 @router.websocket("/detect/camera")
 async def detect_camera_stream(websocket: WebSocket):
@@ -127,16 +84,19 @@ async def detect_camera_stream(websocket: WebSocket):
     摄像头实时检测API
     使用WebSocket实现双向通信：
     - 前端发送图像帧（二进制JPEG数据）
-    - 后端返回检测结果（二进制JPEG数据）
-    - 统计信息通过JSON消息发送
+    - 后端返回检测 JSON（用于前端绘制）
     """
     await websocket.accept()
     logger.info("摄像头检测WebSocket连接已建立")
-    
+
+    response_mode = websocket.query_params.get("mode", "compact")
+    if response_mode not in {"compact", "full"}:
+        await websocket.send_json({"type": "error", "message": "mode 仅支持 compact 或 full"})
+        await websocket.close(code=1003)
+        return
+
     frame_count = 0
-    # 可按需调整：后端最大处理宽度、JPEG质量
     max_width = 640
-    jpeg_quality = 75
     
     try:
         while True:
@@ -155,26 +115,28 @@ async def detect_camera_stream(websocket: WebSocket):
                     })
                     continue
                 
-                # 推理/绘制/编码：放到线程池，避免阻塞事件循环（关键性能点）
-                img_bytes_result, face_count = await _detect_plot_encode(
-                    img, jpeg_quality=jpeg_quality, max_w=max_width
-                )
-
                 frame_count += 1
-                
-                logger.info(f"当前第 {frame_count} 帧，检测到 {face_count} 个人脸")
-                
-                # 先发送统计信息（JSON），再发送图像（二进制）
-                # 这样可以确保前端能正确配对消息
-                stats_message = {
-                    "type": "stats",
-                    "frame_index": frame_count,
-                    "face_count": face_count
+
+                payload, _ = await asyncio.to_thread(_detect_to_payload, img, response_mode, max_width)
+                image_payload = payload["images"][0] if payload.get("images") else {
+                    "shape": [0, 0],
+                    "face_count": 0,
+                    "results": []
                 }
+                logger.info(f"当前第 {frame_count} 帧，检测到 {image_payload['face_count']} 个人脸")
+                message = {
+                    "type": "result",
+                    "frame_index": frame_count,
+                    "mode": response_mode,
+                    "shape": image_payload.get("shape", [0, 0]),
+                    "face_count": image_payload.get("face_count", 0),
+                    "results": image_payload.get("results", []),
+                }
+                if response_mode == "full":
+                    message["speed"] = image_payload.get("speed", {})
+                    message["metadata"] = payload.get("metadata", {})
                 try:
-                    await websocket.send_json(stats_message)
-                    # 发送处理后的图像（二进制）
-                    await websocket.send_bytes(img_bytes_result)
+                    await websocket.send_json(message)
                 except WebSocketDisconnect:
                     raise
                 

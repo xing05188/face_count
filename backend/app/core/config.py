@@ -4,7 +4,7 @@ import torch
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-MODEL_PATH = os.path.join(BASE_DIR, "models", "yolo", "yolov8n-face.pt")
+MODEL_PATH = os.path.join(BASE_DIR, "models", "yolo", "yolov6m-face.pt")
 
 # 检测参数
 CONFIDENCE_THRESHOLD = 0.25
