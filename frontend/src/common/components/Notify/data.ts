@@ -11,7 +11,7 @@ export const notifyData: NotifyItem[] = [
     avatar: "https://tse3-mm.cn.bing.net/th/id/OIP-C.-I8OnVyl2-OakV7GhKFkYgHaHa?w=170&h=180&c=7&r=0&o=5&cb=ucfimg2&dpr=1.5&pid=1.7&ucfimg=1",
     title: "张昊天",
     datetime: "昨天 15:45",
-    description: "夏弘泰你过奖了！其实我是看了马懿扬的深度学习笔记才学会的，那家伙对YOLOv8的理解比官方文档还透彻！"
+    description: "夏弘泰你过奖了！其实我是看了马懿扬的深度学习笔记才学会的，那家伙对yolov6的理解比官方文档还透彻！"
   },
   {
     avatar: "https://tse1-mm.cn.bing.net/th/id/OIP-C.Me4Qoqo96Sk_itQ50tMwzQHaJu?w=148&h=194&c=7&r=0&o=5&cb=ucfimg2&dpr=1.5&pid=1.7&ucfimg=1",
@@ -75,7 +75,7 @@ export const messageData: NotifyItem[] = [
 export const todoData: NotifyItem[] = [
   {
     title: "请张昊天吃海底捞",
-    description: "感谢YOLOv8模型优化指导，张昊天想吃海底捞，要点特辣锅底！还要点虾滑和肥牛！",
+    description: "感谢yolov6模型优化指导，张昊天想吃海底捞，要点特辣锅底！还要点虾滑和肥牛！",
     extra: "今晚7点",
     status: "warning"
   },
@@ -99,7 +99,7 @@ export const todoData: NotifyItem[] = [
   },
   {
     title: "五人组队做开源项目",
-    description: "夏弘泰提议我们一起做个开源项目，用YOLOv8+OpenCV+FastAPI+Vue全栈，名字都想好了叫'FaceCount Pro'",
+    description: "夏弘泰提议我们一起做个开源项目，用yolov6+OpenCV+FastAPI+Vue全栈，名字都想好了叫'FaceCount Pro'",
     extra: "下周讨论",
     status: "primary"
   },

@@ -8,9 +8,23 @@ interface StatsData {
   face_count: number
 }
 
+interface DetectionBox {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+interface DetectionItem {
+  name: string
+  class: number
+  confidence: number
+  box: DetectionBox
+}
+
 const videoRef = ref<HTMLVideoElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
-const resultImageRef = ref<HTMLImageElement | null>(null)
+const resultCanvasRef = ref<HTMLCanvasElement | null>(null)
 
 const loading = ref(false)
 const error = ref("")
@@ -26,14 +40,14 @@ const frameCount = ref(0)
 
 const cameraReady = ref(false)
 const resultReady = ref(false)
+const selectedFps = ref<number>(12)
+const fpsOptions = [8, 10, 12, 15]
 
 let sendTimer: number | null = null
 let sending = false
-let lastResultUrl: string | null = null
+let awaitingResult = false
+let lastSentFrameBlob: Blob | null = null
 
-// 发送帧率（建议 10~15）
-const TARGET_FPS = 12
-const SEND_INTERVAL_MS = Math.round(1000 / TARGET_FPS)
 // 发送分辨率（固定缩放能显著提速）
 const SEND_WIDTH = 640
 const SEND_HEIGHT = 480
@@ -43,13 +57,15 @@ const SEND_JPEG_QUALITY = 0.75
 const canStart = computed(() => !loading.value && !isDetecting.value)
 const canStop = computed(() => isDetecting.value)
 
-function cleanupResultUrl() {
-  if (lastResultUrl) {
-    URL.revokeObjectURL(lastResultUrl)
-    lastResultUrl = null
+function cleanupResultCanvas() {
+  const canvas = resultCanvasRef.value
+  const ctx = canvas?.getContext("2d")
+  if (canvas && ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
   }
-  if (resultImageRef.value) resultImageRef.value.src = ""
   resultReady.value = false
+  awaitingResult = false
+  lastSentFrameBlob = null
 }
 
 function stopSendLoop() {
@@ -58,6 +74,7 @@ function stopSendLoop() {
     sendTimer = null
   }
   sending = false
+  awaitingResult = false
 }
 
 function stopWebSocket() {
@@ -75,6 +92,13 @@ function stopCamera() {
   stream.value = null
   if (videoRef.value) videoRef.value.srcObject = null
   if (s) s.getTracks().forEach(t => t.stop())
+}
+
+function updateFps(nextFps: number) {
+  selectedFps.value = nextFps
+  if (isDetecting.value) {
+    startSendLoop()
+  }
 }
 
 async function waitForVideoReady(timeoutMs = 5000) {
@@ -121,7 +145,7 @@ async function startCamera() {
 function connectWebSocket() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
   const host = window.location.host
-  const wsUrl = `${protocol}//${host}${API_BASE_URL}/detect/camera`
+  const wsUrl = `${protocol}//${host}${API_BASE_URL}/detect/camera?mode=compact`
 
   const socket = new WebSocket(wsUrl)
   socket.binaryType = "arraybuffer"
@@ -140,31 +164,35 @@ function connectWebSocket() {
   }
 
   socket.onmessage = async (event) => {
-    // 二进制：后端返回 JPEG bytes
+    // 兼容旧模式：忽略二进制帧
     if (event.data instanceof ArrayBuffer) {
-      const blob = new Blob([event.data], { type: "image/jpeg" })
-      const newUrl = URL.createObjectURL(blob)
-      if (lastResultUrl) {
-        URL.revokeObjectURL(lastResultUrl)
-      }
-      lastResultUrl = newUrl
-      if (resultImageRef.value) {
-        resultImageRef.value.src = newUrl
-      }
-      resultReady.value = true
       return
     }
 
     // 文本：统计信息 / 错误
     try {
       const data = JSON.parse(event.data as string)
-      if (data.type === "stats") {
+      if (data.type === "result") {
+        awaitingResult = false
+        frameCount.value = data.frame_index
+        stats.value = {
+          frame_index: data.frame_index,
+          face_count: data.face_count
+        }
+        if (lastSentFrameBlob) {
+          await drawFrameWithDetections(lastSentFrameBlob, data.results || [])
+          resultReady.value = true
+        }
+      } else if (data.type === "stats") {
+        // 兼容旧消息结构
+        awaitingResult = false
         frameCount.value = data.frame_index
         stats.value = {
           frame_index: data.frame_index,
           face_count: data.face_count
         }
       } else if (data.type === "error") {
+        awaitingResult = false
         error.value = data.message || "服务端错误"
       }
     } catch {
@@ -173,8 +201,44 @@ function connectWebSocket() {
   }
 }
 
+async function drawFrameWithDetections(frameBlob: Blob, detections: DetectionItem[]) {
+  const canvas = resultCanvasRef.value
+  if (!canvas) return
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return
+
+  const bitmap = await createImageBitmap(frameBlob)
+  canvas.width = bitmap.width
+  canvas.height = bitmap.height
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  bitmap.close()
+
+  ctx.lineWidth = 2
+  ctx.font = "16px sans-serif"
+  detections.forEach((item) => {
+    const { x1, y1, x2, y2 } = item.box
+    const w = Math.max(0, x2 - x1)
+    const h = Math.max(0, y2 - y1)
+    const label = `${item.name} ${(item.confidence * 100).toFixed(1)}%`
+
+    ctx.strokeStyle = "#00c853"
+    ctx.fillStyle = "rgba(0, 200, 83, 0.2)"
+    ctx.strokeRect(x1, y1, w, h)
+    ctx.fillRect(x1, y1, w, h)
+
+    const textWidth = ctx.measureText(label).width
+    const textY = Math.max(0, y1 - 24)
+    ctx.fillStyle = "#00c853"
+    ctx.fillRect(x1, textY, textWidth + 12, 24)
+    ctx.fillStyle = "#ffffff"
+    ctx.fillText(label, x1 + 6, textY + 17)
+  })
+}
+
 async function sendOneFrame() {
   if (sending) return
+  if (awaitingResult) return
   const socket = ws.value
   const v = videoRef.value
   const canvas = canvasRef.value
@@ -200,6 +264,8 @@ async function sendOneFrame() {
     })
     if (!blob) return
 
+    lastSentFrameBlob = blob
+    awaitingResult = true
     const buf = await blob.arrayBuffer()
     socket.send(buf)
   } finally {
@@ -209,9 +275,10 @@ async function sendOneFrame() {
 
 function startSendLoop() {
   stopSendLoop()
+  const intervalMs = Math.max(66, Math.round(1000 / selectedFps.value))
   sendTimer = window.setInterval(() => {
     void sendOneFrame()
-  }, SEND_INTERVAL_MS)
+  }, intervalMs)
 }
 
 async function startDetection() {
@@ -219,7 +286,7 @@ async function startDetection() {
 
   loading.value = true
   error.value = ""
-  cleanupResultUrl()
+  cleanupResultCanvas()
   stats.value = null
   frameCount.value = 0
 
@@ -256,12 +323,12 @@ function reset() {
   error.value = ""
   stats.value = null
   frameCount.value = 0
-  cleanupResultUrl()
+  cleanupResultCanvas()
 }
 
 onUnmounted(() => {
   stopDetection()
-  cleanupResultUrl()
+  cleanupResultCanvas()
 })
 </script>
 
@@ -290,6 +357,20 @@ onUnmounted(() => {
               重置
             </button>
           </div>
+          <div class="fps-row">
+            <label class="fps-label" for="camera-fps-select">检测帧率</label>
+            <select
+              id="camera-fps-select"
+              class="fps-select"
+              :disabled="loading"
+              :value="selectedFps"
+              @change="updateFps(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option v-for="fps in fpsOptions" :key="fps" :value="fps">
+                {{ fps }} FPS
+              </option>
+            </select>
+          </div>
         </div>
         <div v-if="error" class="error-message">
           {{ error }}
@@ -316,11 +397,7 @@ onUnmounted(() => {
             <div class="result-image">
               <h3>检测结果</h3>
               <div class="image-container">
-                <img
-                  ref="resultImageRef"
-                  class="result-img"
-                  alt="检测结果"
-                >
+                <canvas ref="resultCanvasRef" class="result-img" />
                 <div v-if="!resultReady" class="placeholder overlay">
                   <p>{{ isDetecting ? "等待检测结果..." : "检测结果" }}</p>
                 </div>
@@ -427,6 +504,34 @@ h3 {
   gap: 15px;
   margin-top: 20px;
   flex-shrink: 0;
+}
+
+.fps-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fps-label {
+  font-size: 14px;
+  color: #606266;
+  white-space: nowrap;
+}
+
+.fps-select {
+  flex: 1;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #fff;
+  color: #303133;
+}
+
+.fps-select:focus {
+  outline: none;
+  border-color: #409eff;
 }
 
 .start-button,

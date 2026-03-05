@@ -4,9 +4,9 @@
 
 ## 当前已实现的前端页面
 
-- 图片检测页面：上传图片并显示后端返回的带框图片（使用 `POST /api/detect`）
-- 视频检测页面：上传视频并获取后端处理后的视频与帧级统计（使用 `POST /api/detect/video`）
-- 摄像头实时检测页面：使用浏览器摄像头，通过 WebSocket 与后端 `/api/detect/camera` 通信，实时展示检测结果
+- 图片检测页面：上传图片并消费后端 JSON 结果，在前端叠加绘制预测框（使用 `POST /api/detect`）
+- 视频检测页面：播放视频时前端抽帧上传，消费后端 JSON 结果并叠加绘制预测框（使用 `POST /api/detect/frame`）
+- 摄像头实时检测页面：使用浏览器摄像头，通过 WebSocket 与后端 `/api/detect/camera` 通信，实时消费 JSON 结果并绘制预测框
 
 这些页面位于 `frontend/src/pages/`，对应文件为 `image-detect`, `video-detect`, `camera-detect`。
 

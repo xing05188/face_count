@@ -1,26 +1,98 @@
 <script lang="ts" setup>
 import axios from "axios"
-import { ref } from "vue"
+import { nextTick, ref } from "vue"
 
 const API_BASE_URL = import.meta.env.VITE_BASE_URL || "/api"
 
 const file = ref<File | null>(null)
 const imageUrl = ref<string>("")
-const resultUrl = ref<string>("")
 const faceCount = ref<number>(0)
 const loading = ref<boolean>(false)
 const error = ref<string>("")
 const fileInput = ref<HTMLInputElement | null>(null)
+const resultCanvasRef = ref<HTMLCanvasElement | null>(null)
+const resultImageRef = ref<HTMLImageElement | null>(null)
+const latestDetections = ref<DetectionItem[]>([])
+
+interface DetectionBox {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+interface DetectionItem {
+  name: string
+  class: number
+  confidence: number
+  box: DetectionBox
+}
+
+interface DetectionImageResult {
+  shape: [number, number]
+  face_count: number
+  results: DetectionItem[]
+}
+
+interface DetectionResponse {
+  mode: "compact" | "full"
+  images: DetectionImageResult[]
+}
 
 function handleFileChange(event: Event) {
   const target = event.target as HTMLInputElement
   if (target.files && target.files[0]) {
+    if (imageUrl.value) {
+      URL.revokeObjectURL(imageUrl.value)
+    }
     file.value = target.files[0]
     imageUrl.value = URL.createObjectURL(file.value)
-    resultUrl.value = ""
     faceCount.value = 0
     error.value = ""
+    latestDetections.value = []
+    void nextTick(() => {
+      drawDetectionsOnCanvas([])
+    })
   }
+}
+
+function drawDetectionsOnCanvas(results: DetectionItem[]) {
+  if (!resultCanvasRef.value || !resultImageRef.value) return
+  const imgEl = resultImageRef.value
+  if (!imgEl.complete || imgEl.naturalWidth <= 0 || imgEl.naturalHeight <= 0) return
+
+  const canvas = resultCanvasRef.value
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return
+
+  canvas.width = imgEl.naturalWidth
+  canvas.height = imgEl.naturalHeight
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+  ctx.lineWidth = 3
+  ctx.font = "18px sans-serif"
+  results.forEach((item) => {
+    const { x1, y1, x2, y2 } = item.box
+    const w = Math.max(0, x2 - x1)
+    const h = Math.max(0, y2 - y1)
+    const label = `${item.name} ${(item.confidence * 100).toFixed(1)}%`
+
+    ctx.strokeStyle = "#1e88e5"
+    ctx.fillStyle = "rgba(30, 136, 229, 0.15)"
+    ctx.strokeRect(x1, y1, w, h)
+    ctx.fillRect(x1, y1, w, h)
+
+    const textWidth = ctx.measureText(label).width
+    const textY = Math.max(0, y1 - 28)
+    ctx.fillStyle = "#1e88e5"
+    ctx.fillRect(x1, textY, textWidth + 16, 28)
+    ctx.fillStyle = "#ffffff"
+    ctx.fillText(label, x1 + 8, textY + 20)
+  })
+}
+
+function onResultImageLoaded() {
+  drawDetectionsOnCanvas(latestDetections.value)
 }
 
 async function detectImage() {
@@ -36,15 +108,21 @@ async function detectImage() {
     const formData = new FormData()
     formData.append("file", file.value)
 
-    const response = await axios.post(`${API_BASE_URL}/detect`, formData, {
+    const response = await axios.post<DetectionResponse>(`${API_BASE_URL}/detect?response_mode=compact`, formData, {
       headers: {
         "Content-Type": "multipart/form-data"
-      },
-      responseType: "blob"
+      }
     })
 
-    faceCount.value = Number.parseInt(response.headers["x-face-count"] || "0")
-    resultUrl.value = URL.createObjectURL(response.data)
+    const imageResult = response.data.images?.[0]
+    if (!imageResult) {
+      throw new Error("后端未返回检测结果")
+    }
+
+    faceCount.value = imageResult.face_count || 0
+    latestDetections.value = imageResult.results || []
+    await nextTick()
+    drawDetectionsOnCanvas(latestDetections.value)
   } catch (err: any) {
     error.value = err.response?.data?.detail || err.message || "检测失败"
   } finally {
@@ -54,10 +132,18 @@ async function detectImage() {
 
 function reset() {
   file.value = null
+  if (imageUrl.value) {
+    URL.revokeObjectURL(imageUrl.value)
+  }
   imageUrl.value = ""
-  resultUrl.value = ""
   faceCount.value = 0
   error.value = ""
+  latestDetections.value = []
+  const canvas = resultCanvasRef.value
+  const ctx = canvas?.getContext("2d")
+  if (canvas && ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+  }
 }
 </script>
 
@@ -104,12 +190,23 @@ function reset() {
             <div class="spinner" />
             <p>检测中，请稍候...</p>
           </div>
-          <div v-else-if="resultUrl" class="result-content">
+          <div v-else-if="imageUrl" class="result-content">
             <div class="face-count">
               <span class="count-number">{{ faceCount }}</span>
               <span class="count-label">个人脸</span>
             </div>
-            <img :src="resultUrl" class="result-image">
+            <div class="result-image">
+              <div class="result-stage">
+                <img
+                  ref="resultImageRef"
+                  :src="imageUrl"
+                  class="result-base-image"
+                  alt="检测原图"
+                  @load="onResultImageLoaded"
+                >
+                <canvas ref="resultCanvasRef" class="result-canvas" />
+              </div>
+            </div>
           </div>
           <div v-else class="placeholder">
             <p>检测结果</p>
@@ -207,8 +304,7 @@ h2 {
   font-size: 16px;
 }
 
-.preview-image,
-.result-image {
+.preview-image {
   max-width: 100%;
   max-height: 100%;
   border-radius: 8px;
@@ -295,6 +391,33 @@ h2 {
   padding: 20px;
   background: #f5f7fa;
   border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.result-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.result-base-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.result-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  pointer-events: none;
 }
 
 .face-count {

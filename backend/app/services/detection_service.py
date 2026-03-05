@@ -1,4 +1,4 @@
-from ultralytics import YOLO
+from ultralytics import YOLO, __version__ as ultralytics_version
 from app.core.config import (
     MODEL_PATH, CONFIDENCE_THRESHOLD, IOU_THRESHOLD, 
     MAX_IMAGE_SIZE, USE_HALF_PRECISION, DEVICE,
@@ -10,7 +10,7 @@ import numpy as np
 import os
 import tempfile
 import torch
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 import time
 
 logging.basicConfig(level=logging.INFO)
@@ -115,6 +115,80 @@ class FaceDetectionService:
         except Exception as e:
             logger.error(f"检测失败: {e}")
             raise
+
+    def _serialize_single_result(self, result) -> Dict:
+        """将单张图像的检测结果序列化为统一结构。"""
+        orig_shape = getattr(result, "orig_shape", None)
+        shape = [int(orig_shape[0]), int(orig_shape[1])] if orig_shape is not None else [0, 0]
+
+        detections = []
+        boxes = getattr(result, "boxes", None)
+        names_map = getattr(result, "names", None)
+        if boxes is not None:
+            xyxy = boxes.xyxy.cpu().numpy() if boxes.xyxy is not None else []
+            conf = boxes.conf.cpu().numpy() if boxes.conf is not None else []
+            cls = boxes.cls.cpu().numpy() if boxes.cls is not None else []
+
+            for idx in range(len(xyxy)):
+                class_id = int(cls[idx]) if idx < len(cls) else 0
+                class_name = names_map.get(class_id, str(class_id)) if isinstance(names_map, dict) else str(class_id)
+                detections.append({
+                    "name": class_name,
+                    "class": class_id,
+                    "confidence": round(float(conf[idx]), 5) if idx < len(conf) else 0.0,
+                    "box": {
+                        "x1": round(float(xyxy[idx][0]), 5),
+                        "y1": round(float(xyxy[idx][1]), 5),
+                        "x2": round(float(xyxy[idx][2]), 5),
+                        "y2": round(float(xyxy[idx][3]), 5),
+                    }
+                })
+
+        image_payload = {
+            "shape": shape,
+            "face_count": len(detections),
+            "results": detections,
+        }
+
+        speed = getattr(result, "speed", None)
+        if isinstance(speed, dict):
+            image_payload["speed"] = {
+                "preprocess": round(float(speed.get("preprocess", 0.0)), 5),
+                "inference": round(float(speed.get("inference", 0.0)), 5),
+                "postprocess": round(float(speed.get("postprocess", 0.0)), 5),
+            }
+
+        return image_payload
+
+    def serialize_results_payload(self, results, mode: str = "compact") -> Dict:
+        """
+        将 Ultralytics Results 序列化为可供前端绘制的 JSON。
+        mode=compact: 仅返回绘制必要字段。
+        mode=full: 额外返回 metadata 和运行时信息。
+        """
+        if results is None or len(results) == 0:
+            images = [{"shape": [0, 0], "face_count": 0, "results": []}]
+        else:
+            images = [self._serialize_single_result(result) for result in results]
+
+        payload = {
+            "mode": mode,
+            "images": images,
+        }
+
+        if mode == "full":
+            payload["metadata"] = {
+                "imageCount": len(images),
+                "model": str(MODEL_PATH),
+                "device": self.device,
+                "version": {
+                    "ultralytics": ultralytics_version,
+                    "torch": torch.__version__,
+                    "python": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+                }
+            }
+
+        return payload
     
     def detect_video_file(self, video_bytes: bytes, output_format: str = "avi") -> Tuple[bytes, dict]:
         """
